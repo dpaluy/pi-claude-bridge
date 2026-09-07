@@ -1,15 +1,34 @@
 // Canonical selection + display order for the model picker.
-// `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
+// `resolveModel` prefers an exact id, then the first partial match, so `opus`
+// still resolves to the first-listed opus entry without a successor swallowing
+// an older pin (claude-fable-5-1 contains claude-fable-5).
 // Extracted from index.ts so tests can import without activating the extension.
 
-export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+export const MODEL_IDS_IN_ORDER = ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+
+// Successors Anthropic shipped after the installed pi-ai snapshot. Identity
+// only — inherit the sibling's capability fields so the registered
+// contextWindow stays honest. pi-ai's own entry wins when present.
+const DERIVED_FROM: Record<string, { from: string; name: string }> = {
+	"claude-fable-5-1": { from: "claude-fable-5", name: "Claude Fable 5.1" },
+};
+
+function modelFromCatalog<T extends { id: string; name: string }>(piAiModels: T[], id: string): T | undefined {
+	const model = piAiModels.find((m) => m.id === id);
+	if (model) return model;
+	const derived = DERIVED_FROM[id];
+	if (!derived) return undefined;
+	const base = piAiModels.find((m) => m.id === derived.from);
+	return base ? { ...base, id, name: derived.name } : undefined;
+}
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
-// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped.
+// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped
+// unless listed in DERIVED_FROM and their sibling is present.
 // Context-dependent display labels are applied after plan/long-context config is known.
-export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
+export function buildModels<T extends { id: string; name: string; [key: string]: any }>(piAiModels: T[]) {
 	return MODEL_IDS_IN_ORDER
-		.map((id) => piAiModels.find((m) => m.id === id))
+		.map((id) => modelFromCatalog(piAiModels, id))
 		.filter((m) => m != null)
 		// Forward thinkingLevelMap so pi-ai's per-model overrides (e.g. opus-4-8
 		// mapping xhigh→xhigh and max→max) are visible to the effort lookup.
@@ -53,6 +72,9 @@ export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongCon
 				contextWindow: useOneM ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
 			};
 		}
+		case "claude-fable-5-1":
+			// Fable 5.1's default window is 1M; unlike Fable 5 it does not need [1m].
+			return { cliModelId: "claude-fable-5-1", contextWindow: ONE_M_CONTEXT };
 		case "claude-fable-5":
 			return { cliModelId: "claude-fable-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-sonnet-5":
@@ -76,7 +98,7 @@ export function claudeCodeModelId(model: { id: string }, settings: LongContextSe
 
 export function resolveModel<T extends { id: string }>(models: T[], input: string): T | undefined {
 	const lower = input.toLowerCase();
-	return models.find((m) => m.id === lower || m.id.includes(lower));
+	return models.find((m) => m.id === lower) ?? models.find((m) => m.id.includes(lower));
 }
 
 // Produce the model metadata registered with pi. The registered contextWindow must
